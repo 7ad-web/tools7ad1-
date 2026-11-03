@@ -2177,7 +2177,11 @@ async function reencodeVideo(file, targetHeight, targetFps, bitrate, frameMode, 
 async function tikTokHack(blob) {
   if (!blob.type.includes('mp4')) return blob;
   try {
-    const buf = await blob.arrayBuffer(), view = new DataView(buf), newBuf = new Uint8Array(buf);
+    // نقرأ أول 500 كيلوبايت بس من الفيديو
+    const buf = await blob.slice(0, 500 * 1024).arrayBuffer(); 
+    const view = new DataView(buf);
+    const newBuf = new Uint8Array(buf);
+
     let offset = 0;
     while (offset < buf.byteLength) {
       let size = view.getUint32(offset);
@@ -2201,14 +2205,21 @@ async function tikTokHack(blob) {
       }
       offset += size;
     }
-    const pad = 10 * 1024 * 1024; 
-    const fBuf = new Uint8Array(buf.byteLength + pad + 8);
-    fBuf.set(newBuf, 0);
-    new DataView(fBuf.buffer).setUint32(buf.byteLength, pad + 8);
-    fBuf[buf.byteLength+4]=102; fBuf[buf.byteLength+5]=114; fBuf[buf.byteLength+6]=101; fBuf[buf.byteLength+7]=101;
-    return new Blob([fBuf], { type: 'video/mp4' });
-  } catch(e) { return blob; }
-}
+
+    const pad = 10 * 1024 * 1024;
+    const padHeader = new Uint8Array(8);
+    new DataView(padHeader.buffer).setUint32(0, pad + 8);
+    padHeader[4]=102; padHeader[5]=114; padHeader[6]=101; padHeader[7]=101;
+    const padData = new Uint8Array(pad); 
+
+    const firstPart = new Blob([newBuf]);
+    const restOfVideo = blob.slice(buf.byteLength);
+    
+    return new Blob([firstPart, restOfVideo, padHeader, padData], { type: 'video/mp4' });
+  } catch(e) {
+    return blob; 
+  }
+      }
 
 /* ---------------- init ---------------- */
 function toggleFaq(btn){
