@@ -1413,7 +1413,7 @@ function pickHevcLevel(w, h, fps){
    same look, and phones decode it in hardware even at 4K high fps — the usual reason
    editing apps / Topaz exports play smoothly while a plain H.264 4K120 file turns into stills. */
 async function pickVideoConfig(w, h, fps, bitrate){
-  if(fps >= 90 || w * h * fps >= 150e6){        // 90/120fps: phones decode these in hardware as H.265 (like their camera clips)
+  if(false){        // HEVC disabled: always H.264 (so the color-tag fix applies at every resolution)
     const code = pickHevcLevel(w, h, fps);
     for(const mode of ['constant', null]){
       const cfg = { codec:'hvc1.1.6.L'+code+'.B0', width:w, height:h, bitrate:Math.round(bitrate * 0.65), framerate:fps, latencyMode:'quality', hevc:{ format:'hevc' } };
@@ -1464,12 +1464,12 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 /* Renderer: draw(alpha) renders mix(previousSourceFrame, currentSourceFrame, alpha)
    with sharpen/contrast/saturation. WebGL when available, plain 2D otherwise. */
 function createRenderer(w, h, layout, quality, extra){
-  const sharpBy = { 720:0.40, 1080:0.55, 1440:0.60, 2160:0.65 };
+  const sharpBy = { 720:0.40, 1080:0.55, 1440:0.65, 2160:0.80 };
   const contrastBy = { 720:1.02, 1080:1.03, 1440:1.03, 2160:1.03 };
   const satBy = { 720:1.02, 1080:1.04, 1440:1.04, 2160:1.04 };
   const L = Math.max(0, Math.min(4, ENHANCE_LEVEL | 0));
-  const sharpMul    = [0, 0.8, 1.1, 1.4, 1.8][L];
-  const localBase   = [0, 0.025, 0.04, 0.06, 0.45][L];
+  const sharpMul    = L === 4 ? (quality >= 2160 ? 2.2 : quality >= 1440 ? 2.0 : 1.8) : [0, 0.8, 1.1, 1.4][L];
+  const localBase   = L === 4 ? (quality >= 2160 ? 0.50 : quality >= 1440 ? 0.42 : quality >= 1080 ? 0.35 : 0.30) : [0, 0.025, 0.04, 0.06][L];
   const denoiseAmt  = [0, 0.05, 0.10, 0.15, 0.20][L];            // smooths flat areas only (keeps edges) so TikTok's compression has less noise to wreck
   const localRadius = L === 4 ? 4 : 3;                   // big radius = the "clarity / HDR" punch
   const localAmt    = localBase + (quality >= 2160 ? 0.012 : quality >= 1440 ? 0.008 : 0); // modest extra clarity at 1440p/4K
@@ -1480,8 +1480,8 @@ function createRenderer(w, h, layout, quality, extra){
   const satAdd      = [0, 0.00, 0.01, 0.015, 0][L];
   const autoGamma   = 1;   // no auto-brightening
   const sharp    = L === 0 ? 0 : (sharpBy[quality] ?? 0.55) * sharpMul;
-  const contrast = 1;      // only the pro look adds a mild S-curve
-  const sat      = 1;      // and a touch of color
+  const contrast = L === 4 ? (quality >= 2160 ? 1.10 : quality >= 1440 ? 1.08 : 1.05) : 1;      // pro look: more contrast as resolution grows
+  const sat      = L === 4 ? (quality >= 2160 ? 1.15 : quality >= 1440 ? 1.12 : 1.08) : 1;      // and more color as resolution grows
   const { dx, dy, dw, dh } = layout;
 
   // ---- WebGL path ----
