@@ -1464,24 +1464,22 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 /* Renderer: draw(alpha) renders mix(previousSourceFrame, currentSourceFrame, alpha)
    with sharpen/contrast/saturation. WebGL when available, plain 2D otherwise. */
 function createRenderer(w, h, layout, quality, extra){
-  const sharpBy = { 720:0.40, 1080:0.55, 1440:0.65, 2160:0.80 };
-  const contrastBy = { 720:1.02, 1080:1.03, 1440:1.03, 2160:1.03 };
-  const satBy = { 720:1.02, 1080:1.04, 1440:1.04, 2160:1.04 };
+  // إعدادات توباز: تنظيف عالي + شحذ حواف ذكي (بدون تشبع)
+  const sharpBy = { 720:0.30, 1080:0.45, 1440:0.50, 2160:0.55 };
   const L = Math.max(0, Math.min(4, ENHANCE_LEVEL | 0));
-  const sharpMul    = L === 4 ? (quality >= 2160 ? 2.2 : quality >= 1440 ? 2.0 : 1.8) : [0, 0.8, 1.1, 1.4][L];
-  const localBase   = L === 4 ? (quality >= 2160 ? 0.50 : quality >= 1440 ? 0.42 : quality >= 1080 ? 0.35 : 0.30) : [0, 0.025, 0.04, 0.06][L];
-  const denoiseAmt  = [0, 0.05, 0.10, 0.15, 0.20][L];            // smooths flat areas only (keeps edges) so TikTok's compression has less noise to wreck
-  const localRadius = L === 4 ? 4 : 3;                   // big radius = the "clarity / HDR" punch
-  const localAmt    = localBase + (quality >= 2160 ? 0.012 : quality >= 1440 ? 0.008 : 0); // modest extra clarity at 1440p/4K
-  const baseLift    = [0, 0.005, 0.01, 0.015, 0][L];
-  const qualityLift = quality >= 2160 ? 0.008 : quality >= 1440 ? 0.005 : 0;
-  const lift        = 0;   // color stays identical to the source clip (no brightness lift)
-  const contrastAdd = [0, 0.00, 0.005, 0.01, 0][L];
-  const satAdd      = [0, 0.00, 0.01, 0.015, 0][L];
-  const autoGamma   = 1;   // no auto-brightening
+  
+  const sharpMul    = [0, 0.8, 1.2, 1.5, 1.8][L]; 
+  const localBase   = [0, 0.01, 0.02, 0.03, 0.04][L]; 
+  const denoiseAmt  = [0, 0.25, 0.35, 0.45, 0.6][L]; 
+  const localRadius = L === 4 ? 3 : 2; 
+  const localAmt    = localBase;
+  
+  const lift        = 0; 
+  const autoGamma   = 1;   
   const sharp    = L === 0 ? 0 : (sharpBy[quality] ?? 0.55) * sharpMul;
-  const contrast = L === 4 ? (quality >= 2160 ? 1.10 : quality >= 1440 ? 1.08 : 1.05) : 1;      // pro look: more contrast as resolution grows
-  const sat      = L === 4 ? (quality >= 2160 ? 1.15 : quality >= 1440 ? 1.12 : 1.08) : 1;      // and more color as resolution grows
+  const contrast = L === 4 ? 1.02 : 1; 
+  const sat      = L === 4 ? 1.02 : 1; 
+  
   const { dx, dy, dw, dh } = layout;
 
   // ---- WebGL path ----
@@ -1496,6 +1494,7 @@ function createRenderer(w, h, layout, quality, extra){
       return sh;
     };
     const vsSrc = 'attribute vec2 aPos; attribute vec2 aUv; varying vec2 vUv; void main(){ vUv=aUv; gl_Position=vec4(aPos,0.0,1.0); }';
+    
     const fsSrc = [
       'precision highp float;',
       'varying vec2 vUv;',
@@ -1516,25 +1515,26 @@ function createRenderer(w, h, layout, quality, extra){
       'void main(){',
       '  vec3 c = pix(vUv);',
       '  vec3 n = pix(vUv+vec2(uStep.x,0.0)) + pix(vUv-vec2(uStep.x,0.0)) + pix(vUv+vec2(0.0,uStep.y)) + pix(vUv-vec2(0.0,uStep.y));',
-      '  vec3 d = clamp(c - n * 0.25, vec3(-0.22), vec3(0.22));',      // sharpen, halo-limited
-      '  float lc = dot(c, vec3(0.2126, 0.7152, 0.0722)); float la = dot(n * 0.25, vec3(0.2126, 0.7152, 0.0722));',
-      '  float flatA = 1.0 - smoothstep(0.012, 0.07, abs(lc - la));',
-      '  vec3 base = mix(c, n * 0.25, uDenoise * flatA);',
-      '  vec3 s = base + uSharp * d;',
+      '  vec3 blur = n * 0.25;',
+      '  vec3 diff = c - blur;',
+      '  float edge = length(diff);',
+      '  float flatA = 1.0 - smoothstep(0.01, 0.08, edge);', 
+      '  vec3 base = mix(c, blur, uDenoise * flatA);',
+      '  float edgeA = smoothstep(0.01, 0.08, edge);',
+      '  vec3 s = base + uSharp * diff * edgeA;',
       '  vec2 w2 = uStep * uLocalR;',
-      '  vec3 m = (pix(vUv+vec2(w2.x,0.0)) + pix(vUv-vec2(w2.x,0.0)) + pix(vUv+vec2(0.0,w2.y)) + pix(vUv-vec2(0.0,w2.y)) + pix(vUv+w2*0.7071) + pix(vUv-w2*0.7071) + pix(vUv+vec2(w2.x,-w2.y)*0.7071) + pix(vUv+vec2(-w2.x,w2.y)*0.7071)) * 0.125;',
-      '  s += uLocal * clamp(c - m, vec3(-0.15), vec3(0.15));',
-      '  float fm = faceMask(vUv) * uFaceAmt;',                              // AI-detected face area gets extra detail + light
-      '  s = mix(s, n * 0.25, fm * 0.3 * flatA);',
-'  s += fm * (0.35 * d);',
-      // No face-region brightness or color lift: preserve the source look.
-      '  s = pow(max(s, vec3(0.0)), vec3(uGamma)) + uLift;',            // brightness
+      '  vec3 m = (pix(vUv+vec2(w2.x,0.0)) + pix(vUv-vec2(w2.x,0.0)) + pix(vUv+vec2(0.0,w2.y)) + pix(vUv-vec2(0.0,w2.y))) * 0.25;',
+      '  s += uLocal * clamp(s - m, vec3(-0.1), vec3(0.1));',
+      '  float fm = faceMask(vUv) * uFaceAmt;',
+      '  s += fm * (0.2 * diff * edgeA + 0.1 * clamp(s - m, vec3(-0.1), vec3(0.1)));',
+      '  s = pow(max(s, vec3(0.0)), vec3(uGamma)) + uLift;',
       '  s = (s - 0.5) * uContrast + 0.5;',
       '  float l = dot(s, vec3(0.2126, 0.7152, 0.0722));',
       '  s = mix(vec3(l), s, uSat);',
       '  gl_FragColor = vec4(clamp(s, 0.0, 1.0) * uRange.x + uRange.y, 1.0);',
       '}'
     ].join('\n');
+    
     const prog = gl.createProgram();
     gl.attachShader(prog, mk(gl.VERTEX_SHADER, vsSrc));
     gl.attachShader(prog, mk(gl.FRAGMENT_SHADER, fsSrc));
@@ -1580,7 +1580,7 @@ function createRenderer(w, h, layout, quality, extra){
     const uFaceAmtLoc = gl.getUniformLocation(prog, 'uFaceAmt');
     const uRangeLoc = gl.getUniformLocation(prog, 'uRange');
     gl.uniform2f(uRangeLoc, 1, 0);
-    const faceAmt = (extra && extra.faces) ? [0, 0.55, 0.8, 1.1, 1.2][L] * (quality >= 1440 ? 1.15 : 1) : 0;   // face detail only
+    const faceAmt = (extra && extra.faces) ? [0, 0.4, 0.6, 0.8, 0.9][L] * (quality >= 1440 ? 1.1 : 1) : 0;
     const faceData = new Float32Array(16);
     let faceN = 0;
     gl.viewport(0, 0, w, h);
@@ -1599,7 +1599,7 @@ function createRenderer(w, h, layout, quality, extra){
       },
       push(video){
         if(first){ upload(texPrev, video); upload(texCur, video); first = false; return; }
-        const t = texPrev; texPrev = texCur; texCur = t;      // old current becomes previous
+        const t = texPrev; texPrev = texCur; texCur = t;
         upload(texCur, video);
       },
       draw(alpha){
@@ -1617,24 +1617,20 @@ function createRenderer(w, h, layout, quality, extra){
     console.warn('WebGL renderer unavailable, using 2D canvas (no interpolation):', e);
   }
 
-  // ---- 2D fallback ----
   const canvas = document.createElement('canvas');
   canvas.width = w; canvas.height = h;
   const ctx = canvas.getContext('2d', { alpha:false });
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
-  const filter = 'none';
   return {
     canvas, kind:'2d',
-    setFaces(){ /* face AI needs WebGL */ },
-    setLimitedRange(){ /* color fix needs WebGL */ },
+    setFaces(){},
+    setLimitedRange(){},
     push(video){
-      ctx.filter = filter;
       ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h);
       ctx.drawImage(video, dx, dy, dw, dh);
-      ctx.filter = 'none';
     },
-    draw(){ /* frame already drawn in push() */ }
+    draw(){}
   };
 }
 
